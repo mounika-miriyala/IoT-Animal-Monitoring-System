@@ -68,6 +68,6 @@ The proposed system demonstrates how Artificial Intelligence, Computer Vision, a
 
 Mounika Miriyala
 
-Bachelor of Technology (Computer Science and Engineering)
+MSc(Computer Science )
 
 Interested in Artificial Intelligence, Machine Learning, IoT, and Smart Agriculture Solutions.
