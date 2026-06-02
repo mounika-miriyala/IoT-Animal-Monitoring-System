@@ -1,0 +1,146 @@
+import cv2
+import serial
+import time
+import requests
+import numpy as np
+from ultralytics import YOLO
+from datetime import datetime
+
+# 🔁 CHANGE THESE
+ESP32_CAM_URL = "http://10.10.32.72/capture"
+SERIAL_PORT = "COM3"
+
+# 🔔 TELEGRAM SETTINGS
+BOT_TOKEN = "7944185950:AAHDsunodU5y8r-_1FEZDM1uMRpIsU_ttdI"   # ⚠️ use new token
+CHAT_ID = "5281736118"
+
+# 📍 LOCATION (your farm)
+LATITUDE = 11.9416
+LONGITUDE = 79.8083
+
+def send_telegram_image(image_path, caption):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    with open(image_path, "rb") as photo:
+        files = {"photo": photo}
+        data = {
+            "chat_id": CHAT_ID,
+            "caption": caption
+        }
+        requests.post(url, files=files, data=data)
+
+def send_location(lat, lon):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendLocation"
+    data = {
+        "chat_id": CHAT_ID,
+        "latitude": lat,
+        "longitude": lon
+    }
+    requests.post(url, data=data)
+
+print("Starting program...")
+
+# Serial connection
+ser = serial.Serial(SERIAL_PORT, 115200)
+time.sleep(2)
+print("Serial connected")
+
+# Load YOLO model
+model = YOLO("yolov8n.pt")
+print("Model loaded")
+
+last_state = '0'
+
+# ⏱️ Cooldown system
+last_sent_time = 0
+cooldown = 10
+
+print("Camera started")
+
+while True:
+    try:
+        # 📸 Get frame from ESP32
+        response = requests.get(ESP32_CAM_URL, timeout=10)
+        img_array = np.array(bytearray(response.content), dtype=np.uint8)
+        frame = cv2.imdecode(img_array, -1)
+
+        if frame is None:
+            print("❌ Frame decode failed")
+            continue
+
+        # YOLO detection
+        results = model(frame, verbose=False)
+
+        detected = False
+        detected_animal = None
+
+        for r in results:
+            for box in r.boxes:
+                cls = int(box.cls[0])
+                label = model.names[cls]
+
+                if label in ["cow", "dog", "horse", "elephant", "bear", "sheep"]:
+                    detected = True
+                    detected_animal = label
+                    print(f"🐾 Animal detected: {label}")
+
+                    # draw box
+                    x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0,255,0), 2)
+                    cv2.putText(frame, label, (x1, y1-10),
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0,255,0), 2)
+                    break
+
+        # 🔊 BUZZER CONTROL
+        if detected:
+            if last_state != '1':
+                print("🔊 Buzzer ON")
+                ser.write(b'1')
+                last_state = '1'
+        else:
+            if last_state != '0':
+                print("🔇 Buzzer OFF")
+                ser.write(b'0')
+                last_state = '0'
+
+        # 📱 TELEGRAM ALERT + 📍 LOCATION
+        if detected and detected_animal and (time.time() - last_sent_time > cooldown):
+
+            last_sent_time = time.time()
+
+            current_time = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+            image_name = f"{detected_animal}_{current_time.replace(':','-')}.jpg"
+            cv2.imwrite(image_name, frame)
+
+            # 📍 Message with Google Maps link
+            message = f"""🚨 Animal detected in field!
+Type: {detected_animal}
+Time: {current_time}
+
+📍 Location:
+https://www.google.com/maps?q={LATITUDE},{LONGITUDE}
+"""
+
+            print("📤 Sending alert + location to Telegram...")
+
+            # 🖼️ Send image with caption
+            send_telegram_image(image_name, message)
+
+            # 📍 Send live map location
+            send_location(LATITUDE, LONGITUDE)
+
+        # Show camera
+        cv2.imshow("Animal Detection", frame)
+
+        if cv2.waitKey(1) == 27:
+            break
+
+        time.sleep(0.7)
+
+    except Exception as e:
+        print("⚠️ Error:", e)
+        time.sleep(2)
+
+# Cleanup
+cv2.destroyAllWindows()
+ser.close()
